@@ -2,6 +2,17 @@
 import random
 import tkinter as tk
 
+# Lab implementations
+#
+# Added toxic traps with preset locations
+# Modified generation to account for toxic traps
+# Augmented agent with ability to sense toxic traps
+# Intersecting a toxic trap results in a score penalty of -15 points
+# Toxic traps are represented as purple triangles on the grid
+
+# Extra implementations
+#
+# Implemented restart functionality
 
 class VisualGridHuntGame:
     """A flexible Pacman-style grid environment with support for configurable opponents and larger scales."""
@@ -17,13 +28,16 @@ class VisualGridHuntGame:
             # Generate some default scattered walls for a larger grid
             self.walls = {(2, 2), (2, 3), (5, 5), (6, 5), (3, 7)}
 
-        # Dynamically generate random food positions avoiding walls and agent start
+        # Generate preset toxic traps
+        self.toxic_traps = {(1, 1), (4, 4), (7, 2)}
+
+        # Dynamically generate random food positions avoiding walls, toxic traps, and agent start
         self.food_positions = set()
         while len(self.food_positions) < num_food:
             fx = random.randint(0, self.width - 1)
             fy = random.randint(0, self.height - 1)
             pos_tuple = (fx, fy)
-            if pos_tuple != (0, 0) and pos_tuple not in self.walls:
+            if pos_tuple != (0, 0) and pos_tuple not in self.walls and pos_tuple not in self.toxic_traps:
                 self.food_positions.add(pos_tuple)
 
         # Generate adversarial opponents
@@ -32,7 +46,7 @@ class VisualGridHuntGame:
             ox = random.randint(0, self.width - 1)
             oy = random.randint(0, self.height - 1)
             op_pos = [ox, oy]
-            if tuple(op_pos) != (0, 0) and tuple(op_pos) not in self.walls and tuple(op_pos) not in self.food_positions:
+            if tuple(op_pos) != (0, 0) and tuple(op_pos) not in self.walls and tuple(op_pos) not in self.food_positions and tuple(op_pos) not in self.toxic_traps:
                 self.opponents.append(op_pos)
 
         self.score = 0
@@ -44,6 +58,7 @@ class VisualGridHuntGame:
             'agent_pos': list(self.agent_pos),
             'opponent_positions': [list(op) for op in self.opponents],
             'smells_food': tuple(self.agent_pos) in self.food_positions,
+            'smells_toxin': tuple(self.agent_pos) in self.toxic_traps,
             'hit_wall': tuple(self.agent_pos) in self.walls,
             'collision': self.collision,
             'score': self.score,
@@ -65,6 +80,8 @@ class VisualGridHuntGame:
 
         if tuple(new_pos) in self.walls:
             self.score -= 5
+        elif tuple(new_pos) in self.toxic_traps:
+            self.score -= 15
         else:
             self.agent_pos = new_pos
 
@@ -99,8 +116,14 @@ class GridGameGUI:
         self.root = root
         self.root.title("IT3012 - Scalable Multi-Agent Grid Hunt")
 
-        self.env = VisualGridHuntGame(width=width, height=height, num_food=num_food, num_opponents=num_opponents,
-                                      custom_walls=walls)
+        self.game_settings = {
+            'width': width,
+            'height': height,
+            'num_food': num_food,
+            'num_opponents': num_opponents,
+            'custom_walls': walls
+        }
+        self.env = VisualGridHuntGame(**self.game_settings)
 
         # Dynamically calculate cell size so the total canvas fits nicely within a 600x600 window ceiling
         max_canvas_dim = 600
@@ -146,6 +169,18 @@ class GridGameGUI:
             self.canvas.create_oval(x1, y1, x1 + self.cell_size * 0.5, y1 + self.cell_size * 0.5, fill="#f59e0b",
                                     outline="#d97706")
 
+        for tx, ty in self.env.toxic_traps:
+            offset = self.cell_size * 0.25
+            x1 = tx * self.cell_size + offset
+            y1 = (self.env.height - 1 - ty) * self.cell_size + offset
+            self.canvas.create_polygon(
+                x1 + self.cell_size * 0.25, y1,
+                x1, y1 + self.cell_size * 0.5,
+                x1 + self.cell_size * 0.5, y1 + self.cell_size * 0.5,
+                fill="#ad14c1",
+                outline="#ad14c1"
+            )
+
         for ox, oy in self.env.opponents:
             offset = self.cell_size * 0.2
             x1 = ox * self.cell_size + offset
@@ -161,7 +196,12 @@ class GridGameGUI:
                                 outline="#1e3a8a")
 
     def run_loop(self):
-        self.btn.config(state="disabled")
+        if self.env.is_done():
+            self.env = VisualGridHuntGame(**self.game_settings)
+            self.draw_grid()
+            self.label.config(text="Score: 0 | Steps: 0")
+
+        self.btn.config(text="Simulation Running", state="disabled")
 
         def step():
             if not self.env.is_done():
@@ -174,7 +214,7 @@ class GridGameGUI:
             else:
                 end_text = f"Collision! Game Over! Final Score: {self.env.score}" if self.env.collision else f"Finished! Final Score: {self.env.score}"
                 self.label.config(text=end_text)
-                self.btn.config(state="normal")
+                self.btn.config(text="Restart Simulation", state="normal")
 
         step()
 
