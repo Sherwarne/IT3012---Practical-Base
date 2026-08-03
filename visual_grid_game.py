@@ -1,6 +1,35 @@
 # visual_grid_game.py
+import json
 import random
 import tkinter as tk
+from pathlib import Path
+
+
+LEVEL_FILE = Path(__file__).with_name("level_positions.json")
+
+
+def load_level_positions(level_file=LEVEL_FILE):
+    """Load wall and toxic-trap coordinates from the level JSON file."""
+    try:
+        with open(level_file, "r", encoding="utf-8") as file:
+            level = json.load(file)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        level = {}
+
+    walls = {tuple(position) for position in level.get("walls", [])}
+    toxic_traps = {tuple(position) for position in level.get("toxic_traps", [])}
+    return walls, toxic_traps
+
+
+def save_level_positions(walls, toxic_traps, level_file=LEVEL_FILE):
+    """Persist terrain coordinates in a readable, stable order."""
+    level = {
+        "walls": [list(position) for position in sorted(walls)],
+        "toxic_traps": [list(position) for position in sorted(toxic_traps)]
+    }
+    with open(level_file, "w", encoding="utf-8") as file:
+        json.dump(level, file, indent=2)
+        file.write("\n")
 
 # Lab implementations
 #
@@ -14,10 +43,13 @@ import tkinter as tk
 #
 # Implemented restart functionality
 
+# NOTE: You can start the game with python visual_grid_game.py
+
 class VisualGridHuntGame:
     """A flexible Pacman-style grid environment with support for configurable opponents and larger scales."""
 
-    def __init__(self, width=10, height=10, num_food=10, num_opponents=2, custom_walls=None):
+    def __init__(self, width=10, height=10, num_food=10, num_opponents=2, custom_walls=None,
+                 custom_toxic_traps=None):
         self.width = width
         self.height = height
         self.agent_pos = [0, 0]  # Starting position (x, y)
@@ -26,10 +58,12 @@ class VisualGridHuntGame:
             self.walls = set(custom_walls)
         else:
             # Generate some default scattered walls for a larger grid
-            self.walls = {(2, 2), (2, 3), (5, 5), (6, 5), (3, 7)}
+            self.walls = {(2, 2), (2, 3), (5, 5), (6, 5), (3, 7), (5, 4), (5, 3), (7, 7), (8, 8), (1, 5), (4, 7), (3, 3), (6, 1), (9, 4), (0, 6)}
 
-        # Generate preset toxic traps
-        self.toxic_traps = {(1, 1), (4, 4), (7, 2)}
+        if custom_toxic_traps is not None:
+            self.toxic_traps = set(custom_toxic_traps)
+        else:
+            self.toxic_traps = {(1, 1), (4, 4), (7, 2), (10, 3), (5, 8), (8, 6), (3, 9), (9, 1), (2, 8), (6, 2)}
 
         # Dynamically generate random food positions avoiding walls, toxic traps, and agent start
         self.food_positions = set()
@@ -106,7 +140,7 @@ class VisualGridHuntGame:
                 self.collision = True
 
     def is_done(self) -> bool:
-        return len(self.food_positions) == 0 or self.steps >= 60 or self.collision
+        return len(self.food_positions) == 0 or self.steps >= 100 or self.collision
 
 
 class GridGameGUI:
@@ -116,14 +150,30 @@ class GridGameGUI:
         self.root = root
         self.root.title("IT3012 - Scalable Multi-Agent Grid Hunt")
 
+        saved_walls, saved_toxic_traps = load_level_positions()
+        if walls is not None:
+            saved_walls = set(walls)
+
+        def is_valid_tile(position):
+            return (len(position) == 2 and 0 <= position[0] < width and
+                    0 <= position[1] < height and position != (0, 0))
+
+        saved_walls = {position for position in saved_walls if is_valid_tile(position)}
+        saved_toxic_traps = {position for position in saved_toxic_traps if is_valid_tile(position)} - saved_walls
+
         self.game_settings = {
             'width': width,
             'height': height,
             'num_food': num_food,
             'num_opponents': num_opponents,
-            'custom_walls': walls
+            'custom_walls': saved_walls,
+            'custom_toxic_traps': saved_toxic_traps
         }
         self.env = VisualGridHuntGame(**self.game_settings)
+        self.edit_mode = False
+        self.simulation_running = False
+        self.scheduled_step = None
+        self.last_edited_tile = None
 
         # Dynamically calculate cell size so the total canvas fits nicely within a 600x600 window ceiling
         max_canvas_dim = 600
@@ -134,15 +184,79 @@ class GridGameGUI:
 
         self.canvas = tk.Canvas(root, width=canvas_w, height=canvas_h, bg="white")
         self.canvas.pack()
+        self.canvas.bind("<Button-1>", self.edit_tile)
+        self.canvas.bind("<B1-Motion>", self.edit_tile)
+        self.canvas.bind("<ButtonRelease-1>", self.finish_edit_stroke)
+        self.canvas.bind("<Leave>", self.leave_canvas)
 
         self.label = tk.Label(root, text="Score: 0 | Steps: 0", font=("Arial", 14))
         self.label.pack(pady=10)
 
-        self.btn = tk.Button(root, text="Start Simulation", command=self.run_loop, font=("Arial", 12), bg="#000066",
-                             fg="white")
-        self.btn.pack(pady=5)
+        button_frame = tk.Frame(root)
+        button_frame.pack(pady=5)
+
+        self.btn = tk.Button(button_frame, text="Start Simulation", command=self.run_loop, font=("Arial", 12),
+                             bg="#000066", fg="white")
+        self.btn.pack(side="left", padx=4)
+
+        self.edit_btn = tk.Button(button_frame, text="Edit Grid", command=self.toggle_edit_mode,
+                                  font=("Arial", 12), bg="#475569", fg="white")
+        self.edit_btn.pack(side="left", padx=4)
 
         self.draw_grid()
+
+    def toggle_edit_mode(self):
+        if not self.edit_mode:
+            self.edit_mode = True
+            self.env.food_positions.clear()
+            self.btn.config(state="disabled")
+            self.edit_btn.config(text="Save Changes", bg="#15803d")
+            self.label.config(text="Edit mode: click a tile to cycle Empty → Wall → Toxic Trap")
+            self.draw_grid()
+            return
+
+        save_level_positions(self.env.walls, self.env.toxic_traps)
+        self.game_settings['custom_walls'] = set(self.env.walls)
+        self.game_settings['custom_toxic_traps'] = set(self.env.toxic_traps)
+        self.env = VisualGridHuntGame(**self.game_settings)
+        self.edit_mode = False
+        self.btn.config(text="Start Simulation", state="normal")
+        self.edit_btn.config(text="Edit Grid", bg="#475569")
+        self.label.config(text="Changes saved | Score: 0 | Steps: 0")
+        self.draw_grid()
+
+    def edit_tile(self, event):
+        if not self.edit_mode:
+            return
+
+        x = event.x // self.cell_size
+        y = self.env.height - 1 - (event.y // self.cell_size)
+        position = (x, y)
+        if not (0 <= x < self.env.width and 0 <= y < self.env.height):
+            self.last_edited_tile = None
+            return
+        if position == self.last_edited_tile:
+            return
+
+        self.last_edited_tile = position
+        if position == (0, 0):
+            return
+
+        if position in self.env.walls:
+            self.env.walls.remove(position)
+            self.env.toxic_traps.add(position)
+        elif position in self.env.toxic_traps:
+            self.env.toxic_traps.remove(position)
+        else:
+            self.env.walls.add(position)
+        self.draw_grid()
+
+    def finish_edit_stroke(self, _event):
+        self.last_edited_tile = None
+
+    def leave_canvas(self, _event):
+        if self.edit_mode:
+            self.last_edited_tile = None
 
     def draw_grid(self):
         self.canvas.delete("all")
@@ -196,27 +310,48 @@ class GridGameGUI:
                                 outline="#1e3a8a")
 
     def run_loop(self):
+        if self.edit_mode:
+            return
+
+        if self.simulation_running:
+            self.stop_simulation()
+            return
+
         if self.env.is_done():
             self.env = VisualGridHuntGame(**self.game_settings)
             self.draw_grid()
             self.label.config(text="Score: 0 | Steps: 0")
 
-        self.btn.config(text="Simulation Running", state="disabled")
+        self.simulation_running = True
+        self.btn.config(text="Stop Simulation", state="normal", bg="#b91c1c")
+        self.edit_btn.config(state="disabled")
 
         def step():
-            if not self.env.is_done():
+            if self.simulation_running and not self.env.is_done():
                 action = random.choice(['Up', 'Down', 'Left', 'Right'])
                 self.env.execute_action(action)
 
                 self.draw_grid()
                 self.label.config(text=f"Score: {self.env.score} | Steps: {self.env.steps} | Action: {action}")
-                self.root.after(250, step)
-            else:
+                self.scheduled_step = self.root.after(250, step)
+            elif self.simulation_running:
+                self.simulation_running = False
+                self.scheduled_step = None
                 end_text = f"Collision! Game Over! Final Score: {self.env.score}" if self.env.collision else f"Finished! Final Score: {self.env.score}"
                 self.label.config(text=end_text)
-                self.btn.config(text="Restart Simulation", state="normal")
+                self.btn.config(text="Restart Simulation", state="normal", bg="#000066")
+                self.edit_btn.config(state="normal")
 
         step()
+
+    def stop_simulation(self):
+        self.simulation_running = False
+        if self.scheduled_step is not None:
+            self.root.after_cancel(self.scheduled_step)
+            self.scheduled_step = None
+        self.btn.config(text="Start Simulation", state="normal", bg="#000066")
+        self.edit_btn.config(state="normal")
+        self.label.config(text=f"Simulation stopped | Score: {self.env.score} | Steps: {self.env.steps}")
 
 
 if __name__ == "__main__":
