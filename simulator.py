@@ -1,15 +1,20 @@
 # simulator.py
 from agent import SimpleReflexAgent
-from visual_grid_game import VisualGridHuntGame, load_level_positions
+from visual_grid_game import VisualGridHuntGame, load_level_positions, load_start_position
 
 
 def run_grid_hunt(width=12, height=12, num_food=15):
     walls, toxic_traps = load_level_positions()
+    start_position = load_start_position()
+    if not (0 <= start_position[0] < width and 0 <= start_position[1] < height):
+        start_position = (0, 0)
     walls = {position for position in walls if 0 <= position[0] < width and 0 <= position[1] < height}
     toxic_traps = {
         position for position in toxic_traps
         if 0 <= position[0] < width and 0 <= position[1] < height
     } - walls
+    walls.discard(start_position)
+    toxic_traps.discard(start_position)
 
     env = VisualGridHuntGame(
         width=width,
@@ -17,7 +22,8 @@ def run_grid_hunt(width=12, height=12, num_food=15):
         num_food=num_food,
         num_opponents=0,
         custom_walls=walls,
-        custom_toxic_traps=toxic_traps
+        custom_toxic_traps=toxic_traps,
+        start_position=start_position
     )
     agent = SimpleReflexAgent()
 
