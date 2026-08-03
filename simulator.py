@@ -1,17 +1,35 @@
 # simulator.py
-from grid_game import GridHuntGame
-from agent import GreedyGridAgent
+from agent import SimpleReflexAgent
+from visual_grid_game import VisualGridHuntGame, load_level_positions
 
-def run_grid_hunt():
-    env = GridHuntGame()
-    agent = GreedyGridAgent()
 
-    print("=== UC Berkeley Style Small Grid Hunt Started ===")
+def run_grid_hunt(width=12, height=12, num_food=15):
+    walls, toxic_traps = load_level_positions()
+    walls = {position for position in walls if 0 <= position[0] < width and 0 <= position[1] < height}
+    toxic_traps = {
+        position for position in toxic_traps
+        if 0 <= position[0] < width and 0 <= position[1] < height
+    } - walls
+
+    env = VisualGridHuntGame(
+        width=width,
+        height=height,
+        num_food=num_food,
+        num_opponents=0,
+        custom_walls=walls,
+        custom_toxic_traps=toxic_traps
+    )
+    agent = SimpleReflexAgent()
+
+    print("=== Simple Reflex Agent Grid Hunt Started ===")
     while not env.is_done():
-        percept = env.get_percept(agent)
+        percept = env.get_percept()
         action = agent.sense_and_act(percept)
-        env.execute_action(agent, action)
-        print(f"Pos: {percept['agent_pos']} | Food Left: {percept['remaining_food']} | Score: {percept['score']}")
+        env.execute_action(action)
+        print(
+            f"Step: {env.steps} | Percept: {percept} | "
+            f"Action: {action} | Food Left: {len(env.food_positions)} | Score: {env.score}"
+        )
 
     print(f"\nGame Over! Final Score: {env.score} after {env.steps} steps.")
 
