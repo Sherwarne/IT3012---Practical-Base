@@ -9,6 +9,7 @@ from agent import GreedyGridAgent, ModelBasedAgent, SimpleReflexAgent
 
 
 LEVEL_FILE = Path(__file__).with_name("level_positions.json")
+DEFAULT_FOOD_CONCENTRATION = 15
 AGENT_TYPES = {
     "Greedy Grid Agent": GreedyGridAgent,
     "Simple Reflex Agent": SimpleReflexAgent,
@@ -73,10 +74,11 @@ def save_level_positions(walls, toxic_traps, player_start=None, level_file=LEVEL
 class VisualGridHuntGame:
     """A flexible Pacman-style grid environment with support for configurable opponents and larger scales."""
 
-    def __init__(self, width=10, height=10, num_food=10, num_opponents=2, custom_walls=None,
-                 custom_toxic_traps=None, start_position=(0, 0)):
+    def __init__(self, width=15, height=15, num_food=10, num_opponents=2, custom_walls=None,
+                 custom_toxic_traps=None, start_position=(0, 0), max_steps=150):
         self.width = width
         self.height = height
+        self.max_steps = max_steps
         self.agent_pos = list(start_position)
         # Randomize initial facing direction
         if random.random() < 0.5:
@@ -95,14 +97,17 @@ class VisualGridHuntGame:
         else:
             self.toxic_traps = {(1, 1), (4, 4), (7, 2), (10, 3), (5, 8), (8, 6), (3, 9), (9, 1), (2, 8), (6, 2)}
 
-        # Dynamically generate random food positions avoiding walls, toxic traps, and agent start
-        self.food_positions = set()
-        while len(self.food_positions) < num_food:
-            fx = random.randint(0, self.width - 1)
-            fy = random.randint(0, self.height - 1)
-            pos_tuple = (fx, fy)
-            if pos_tuple != tuple(self.agent_pos) and pos_tuple not in self.walls and pos_tuple not in self.toxic_traps:
-                self.food_positions.add(pos_tuple)
+        # Generate random food on eligible empty tiles.
+        eligible_food_cells = [
+            (x, y)
+            for x in range(self.width)
+            for y in range(self.height)
+            if (x, y) != tuple(self.agent_pos)
+            and (x, y) not in self.walls
+            and (x, y) not in self.toxic_traps
+        ]
+        food_count = min(num_food, len(eligible_food_cells))
+        self.food_positions = set(random.sample(eligible_food_cells, food_count))
 
         # Generate adversarial opponents
         self.opponents = []
@@ -117,6 +122,7 @@ class VisualGridHuntGame:
         self.steps = 0
         self.collision = False
         self.last_move_succeeded = True
+        self.last_move_result = 'none'
 
     def get_percept(self) -> dict:
         # Declare direction offsets (orthogonally adjacent)
@@ -135,8 +141,10 @@ class VisualGridHuntGame:
         return {
             'wall_ahead': outside_grid or cell_ahead in self.walls,
             'food_here': tuple(self.agent_pos) in self.food_positions,
-            'toxic_trap_ahead': outside_grid or cell_ahead in self.toxic_traps,
-            'last_move_succeeded': self.last_move_succeeded
+            'toxic_trap_ahead': cell_ahead in self.toxic_traps,
+            'edge_ahead': outside_grid,
+            'last_move_succeeded': self.last_move_succeeded,
+            'last_move_result': self.last_move_result
         }
 
     def execute_action(self, action: str):
@@ -159,12 +167,18 @@ class VisualGridHuntGame:
         if tuple(new_pos) in self.walls:
             self.score -= 5
             self.last_move_succeeded = False
+            self.last_move_result = 'wall'
         elif tuple(new_pos) in self.toxic_traps:
             self.score -= 15
             self.last_move_succeeded = False
+            self.last_move_result = 'toxic_trap'
+        elif action in ('Up', 'Down', 'Left', 'Right') and new_pos == old_pos:
+            self.last_move_succeeded = False
+            self.last_move_result = 'edge'
         else:
             self.agent_pos = new_pos
-            self.last_move_succeeded = action not in ('Up', 'Down', 'Left', 'Right') or new_pos != old_pos
+            self.last_move_succeeded = True
+            self.last_move_result = 'success'
 
         tuple_pos = tuple(self.agent_pos)
         if tuple_pos in self.food_positions:
@@ -187,13 +201,13 @@ class VisualGridHuntGame:
                 self.collision = True
 
     def is_done(self) -> bool:
-        return len(self.food_positions) == 0 or self.steps >= 100 or self.collision
+        return len(self.food_positions) == 0 or self.steps >= self.max_steps or self.collision
 
 
 class GridGameGUI:
     """Tkinter wrapper that dynamically scales cell sizes to keep larger grids on screen."""
 
-    def __init__(self, root, width=10, height=10, num_food=12, num_opponents=2, walls=None):
+    def __init__(self, root, width=15, height=15, num_food=12, num_opponents=2, walls=None):
         self.root = root
         self.root.title("IT3012 - Scalable Multi-Agent Grid Hunt")
 
@@ -211,14 +225,18 @@ class GridGameGUI:
         saved_toxic_traps = {position for position in saved_toxic_traps if is_valid_tile(position)} - saved_walls
         saved_toxic_traps.discard(saved_start)
 
+        available_food_cells = width * height - len(saved_walls | saved_toxic_traps | {saved_start})
+        default_food_count = round(available_food_cells * DEFAULT_FOOD_CONCENTRATION / 100)
+
         self.game_settings = {
             'width': width,
             'height': height,
-            'num_food': num_food,
+            'num_food': default_food_count,
             'num_opponents': num_opponents,
             'custom_walls': saved_walls,
             'custom_toxic_traps': saved_toxic_traps,
-            'start_position': saved_start
+            'start_position': saved_start,
+            'max_steps': 150
         }
         self.env = VisualGridHuntGame(**self.game_settings)
         self.agent = ModelBasedAgent()
@@ -248,28 +266,79 @@ class GridGameGUI:
         self.label = tk.Label(root, text="Score: 0 | Steps: 0", font=("Arial", 14))
         self.label.pack(pady=10)
 
-        agent_frame = tk.Frame(root)
-        agent_frame.pack()
-        tk.Label(agent_frame, text="Agent:", font=("Arial", 11)).pack(side="left", padx=(0, 4))
+        self.agent_frame = tk.Frame(root)
+        self.agent_frame.pack()
+        tk.Label(self.agent_frame, text="Agent:", font=("Arial", 11)).pack(side="left", padx=(0, 4))
         self.agent_choice = tk.StringVar(value="Model-Based Agent")
-        self.agent_menu = tk.OptionMenu(agent_frame, self.agent_choice, *AGENT_TYPES)
+        self.agent_menu = tk.OptionMenu(self.agent_frame, self.agent_choice, *AGENT_TYPES)
         self.agent_menu.config(font=("Arial", 11), width=18)
         self.agent_menu.pack(side="left")
 
-        button_frame = tk.Frame(root)
-        button_frame.pack(pady=5)
+        self.food_frame = tk.Frame(root)
+        self.food_frame.pack(pady=4)
+        self.food_scale = tk.Scale(self.food_frame, from_=0, to=100, orient="horizontal", resolution=1,
+                                   label="Food (%)", length=150)
+        self.food_scale.set(DEFAULT_FOOD_CONCENTRATION)
+        self.food_scale.pack(side="left", padx=4)
+        self.food_scale.bind("<ButtonRelease-1>", self.update_food_concentration)
+        self.retry_food_btn = tk.Button(self.food_frame, text="Retry Food",
+                                        command=self.regenerate_food, font=("Arial", 11),
+                                        bg="#b45309", fg="white")
+        self.retry_food_btn.pack(side="left", padx=4)
 
-        self.btn = tk.Button(button_frame, text="Start Simulation", command=self.run_loop, font=("Arial", 12),
+        self.steps_scale = tk.Scale(
+            self.food_frame,
+            from_=50,
+            to=500,
+            orient="horizontal",
+            resolution=50,
+            label="Max steps",
+            length=150,
+            command=self.update_max_steps
+        )
+        self.steps_scale.set(150)
+        self.steps_scale.pack(side="left", padx=4)
+
+        self.button_frame = tk.Frame(root)
+        self.button_frame.pack(pady=5)
+
+        self.btn = tk.Button(self.button_frame, text="Start Simulation", command=self.run_loop, font=("Arial", 12),
                              bg="#000066", fg="white")
         self.btn.pack(side="left", padx=4)
 
-        self.edit_btn = tk.Button(button_frame, text="Edit Grid", command=self.toggle_edit_mode,
+        self.edit_btn = tk.Button(self.button_frame, text="Edit Grid", command=self.toggle_edit_mode,
                                   font=("Arial", 12), bg="#475569", fg="white")
         self.edit_btn.pack(side="left", padx=4)
 
-        self.clear_btn = tk.Button(button_frame, text="Clear Grid", command=self.clear_grid,
+        self.clear_btn = tk.Button(self.button_frame, text="Clear Grid", command=self.clear_grid,
                                    font=("Arial", 12), bg="#b91c1c", fg="white")
 
+        self.draw_grid()
+
+    def available_food_cell_count(self):
+        occupied = set(self.game_settings['custom_walls']) | set(self.game_settings['custom_toxic_traps'])
+        occupied.add(tuple(self.game_settings['start_position']))
+        return self.game_settings['width'] * self.game_settings['height'] - len(occupied)
+
+    def food_count_for_concentration(self):
+        return round(self.available_food_cell_count() * self.food_scale.get() / 100)
+
+    def update_food_concentration(self, _event):
+        self.regenerate_food()
+
+    def update_max_steps(self, value):
+        max_steps = int(float(value))
+        self.game_settings['max_steps'] = max_steps
+        self.env.max_steps = max_steps
+
+    def regenerate_food(self):
+        if self.edit_mode or self.simulation_running:
+            return
+        self.game_settings['num_food'] = self.food_count_for_concentration()
+        self.env = VisualGridHuntGame(**self.game_settings)
+        self.restart_required = False
+        self.btn.config(text="Start Simulation", state="normal", bg="#000066")
+        self.label.config(text=f"Food regenerated | Food: {len(self.env.food_positions)} | Score: 0 | Steps: 0")
         self.draw_grid()
 
     def toggle_edit_mode(self):
@@ -282,6 +351,8 @@ class GridGameGUI:
             self.env.food_positions.clear()
             self.btn.config(state="disabled")
             self.agent_menu.config(state="disabled")
+            self.retry_food_btn.config(state="disabled")
+            self.steps_scale.config(state="disabled")
             self.edit_btn.config(text="Save Changes", bg="#15803d")
             self.clear_btn.pack(side="left", padx=4)
             self.label.config(text="Edit mode: click a tile to cycle Empty → Wall → Toxic Trap")
@@ -322,6 +393,8 @@ class GridGameGUI:
         self.restart_required = False
         self.btn.config(text="Start Simulation", state="normal")
         self.agent_menu.config(state="normal")
+        self.retry_food_btn.config(state="normal")
+        self.steps_scale.config(state="normal")
         self.edit_btn.config(text="Edit Grid", bg="#475569")
         self.clear_btn.pack_forget()
         self.label.config(text="Changes saved | Score: 0 | Steps: 0")
@@ -397,11 +470,11 @@ class GridGameGUI:
                 y2 = y1 + self.cell_size
 
                 color = "#f1f5f9" if (x, y) not in self.env.walls else "#64748b"
-                self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline="#cbd5e1", width=2)
+                self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline="#cbd5e1", width=1)
 
                 # Only draw text if cell is large enough
                 if self.cell_size >= 40 and (x, y) in self.env.walls:
-                    self.canvas.create_text(x1 + self.cell_size / 2, y1 + self.cell_size / 2, text="W", fill="white",
+                    self.canvas.create_text(x1 + self.cell_size / 2, y1 + self.cell_size / 2, text="", fill="white",
                                             font=("Arial", 12, "bold"))
 
         for fx, fy in self.env.food_positions:
@@ -466,6 +539,8 @@ class GridGameGUI:
         self.simulation_running = True
         self.btn.config(text="Stop Simulation", state="normal", bg="#b91c1c")
         self.agent_menu.config(state="disabled")
+        self.retry_food_btn.config(state="disabled")
+        self.steps_scale.config(state="disabled")
         self.edit_btn.config(state="disabled")
 
         def step():
@@ -484,6 +559,8 @@ class GridGameGUI:
                 self.label.config(text=end_text)
                 self.btn.config(text="Restart Simulation", state="normal", bg="#000066")
                 self.agent_menu.config(state="normal")
+                self.retry_food_btn.config(state="normal")
+                self.steps_scale.config(state="normal")
                 self.edit_btn.config(state="normal")
 
         step()
@@ -496,12 +573,13 @@ class GridGameGUI:
             self.scheduled_step = None
         self.btn.config(text="Restart Simulation", state="normal", bg="#000066")
         self.agent_menu.config(state="normal")
+        self.retry_food_btn.config(state="normal")
+        self.steps_scale.config(state="normal")
         self.edit_btn.config(state="normal")
         self.label.config(text=f"Simulation stopped | Score: {self.env.score} | Steps: {self.env.steps}")
 
 
 if __name__ == "__main__":
     root = tk.Tk()
-    # Try a larger grid size like 12x12 with 15 food and 3 opponents!
-    app = GridGameGUI(root, width=12, height=12, num_food=15, num_opponents=0)
+    app = GridGameGUI(root, width=15, height=15, num_food=15, num_opponents=0)
     root.mainloop()

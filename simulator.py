@@ -3,7 +3,7 @@ from agent import SimpleReflexAgent
 from visual_grid_game import VisualGridHuntGame, load_level_positions, load_start_position
 
 
-def run_grid_hunt(width=12, height=12, num_food=15):
+def run_grid_hunt(width=15, height=15, num_food=15):
     walls, toxic_traps = load_level_positions()
     start_position = load_start_position()
     if not (0 <= start_position[0] < width and 0 <= start_position[1] < height):
