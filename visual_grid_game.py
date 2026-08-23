@@ -160,7 +160,8 @@ class VisualGridHuntGame:
         self.last_move_succeeded = True
         self.last_move_result = 'none'
 
-    def get_percept(self) -> dict:
+    def get_local_percept(self) -> dict:
+        """Return only information available at or directly ahead of the agent."""
         # Declare direction offsets (orthogonally adjacent)
         direction_offsets = {
             'Up': (0, 1),
@@ -182,6 +183,16 @@ class VisualGridHuntGame:
             'last_move_succeeded': self.last_move_succeeded,
             'last_move_result': self.last_move_result
         }
+
+    def get_global_percept(self) -> dict:
+        """Return local sensing plus global map information for fully informed agents."""
+        percept = self.get_local_percept()
+        percept.update({
+            'grid_size': (self.width, self.height),
+            'walls': list(self.walls),
+            'all_food': list(self.food_positions)
+        })
+        return percept
 
     def execute_action(self, action: str):
         self.steps += 1
@@ -724,7 +735,7 @@ class GridGameGUI:
 
         def step():
             if self.simulation_running and not self.env.is_done():
-                percept = self.env.get_percept()
+                percept = self.env.get_local_percept()
                 action = self.agent.sense_and_act(percept)
                 self.env.execute_action(action)
 

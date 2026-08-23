@@ -41,7 +41,7 @@ def run_grid_hunt(width=15, height=15, num_food=15):
 
     print("=== Simple Reflex Agent Grid Hunt Started ===")
     while not env.is_done():
-        percept = env.get_percept()
+        percept = env.get_local_percept()
         action = agent.sense_and_act(percept)
         env.execute_action(action)
         print(
