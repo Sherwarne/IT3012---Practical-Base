@@ -5,15 +5,18 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox
 
-from agent import GreedyGridAgent, ModelBasedAgent, SimpleReflexAgent
+from agent import GreedyGridAgent, ModelBasedAgent, SearchAgent, SimpleReflexAgent
 
 
 LEVEL_FILE = Path(__file__).with_name("level_positions.json")
 DEFAULT_FOOD_CONCENTRATION = 15
 AGENT_TYPES = {
-    "Greedy Grid Agent": GreedyGridAgent,
-    "Simple Reflex Agent": SimpleReflexAgent,
-    "Model-Based Agent": ModelBasedAgent
+    "Greedy Grid Agent": (GreedyGridAgent, None),
+    "Simple Reflex Agent": (SimpleReflexAgent, None),
+    "Model-Based Agent": (ModelBasedAgent, None),
+    "Search Agent (BFS)": (SearchAgent, 'BFS'),
+    "Search Agent (DFS)": (SearchAgent, 'DFS'),
+    "Search Agent (UCS)": (SearchAgent, 'UCS')
 }
 
 
@@ -188,8 +191,10 @@ class VisualGridHuntGame:
         """Return local sensing plus global map information for fully informed agents."""
         percept = self.get_local_percept()
         percept.update({
+            'agent_pos': tuple(self.agent_pos),
             'grid_size': (self.width, self.height),
             'walls': list(self.walls),
+            'all_toxic_traps': list(self.toxic_traps),
             'all_food': list(self.food_positions)
         })
         return percept
@@ -711,6 +716,13 @@ class GridGameGUI:
             self.canvas.create_oval(x1, y1, x1 + self.cell_size * 0.7, y1 + self.cell_size * 0.7,
                                     fill="#000066", outline="#1e3a8a")
 
+    def create_selected_agent(self):
+        agent_class, algorithm = AGENT_TYPES[self.agent_choice.get()]
+        agent = agent_class()
+        if isinstance(agent, SearchAgent):
+            agent.active_algo = algorithm
+        return agent
+
     def run_loop(self):
         if self.edit_mode:
             return
@@ -723,7 +735,7 @@ class GridGameGUI:
             self.reset_simulation()
             return
 
-        self.agent = AGENT_TYPES[self.agent_choice.get()]()
+        self.agent = self.create_selected_agent()
         if isinstance(self.agent, ModelBasedAgent):
             self.agent.facing_direction = self.env.facing_direction
         self.simulation_running = True
@@ -735,7 +747,10 @@ class GridGameGUI:
 
         def step():
             if self.simulation_running and not self.env.is_done():
-                percept = self.env.get_local_percept()
+                if isinstance(self.agent, SearchAgent):
+                    percept = self.env.get_global_percept()
+                else:
+                    percept = self.env.get_local_percept()
                 action = self.agent.sense_and_act(percept)
                 self.env.execute_action(action)
 
@@ -758,7 +773,7 @@ class GridGameGUI:
     def reset_simulation(self):
         """Restore initial state without starting the simulation."""
         self.env = VisualGridHuntGame(**self.game_settings)
-        self.agent = AGENT_TYPES[self.agent_choice.get()]()
+        self.agent = self.create_selected_agent()
         if isinstance(self.agent, ModelBasedAgent):
             self.agent.facing_direction = self.env.facing_direction
         self.simulation_running = False

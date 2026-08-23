@@ -1,5 +1,7 @@
 # agent.py
 import random
+from collections import deque
+import heapq
 
 
 class GreedyGridAgent:
@@ -188,3 +190,103 @@ class ModelBasedAgent:
         self.last_action = action
         return action
 
+
+class SearchAgent:
+    """Plan paths to the closest food using BFS, DFS, or UCS."""
+
+    ACTIONS = (
+        ('Up', (0, 1)),
+        ('Down', (0, -1)),
+        ('Left', (-1, 0)),
+        ('Right', (1, 0)),
+    )
+
+    def __init__(self):
+        self.plan = []
+        self.active_algo = 'BFS'
+
+    def _successors(self, state, walls, grid_size):
+        width, height = grid_size
+        for action, (dx, dy) in self.ACTIONS:
+            next_state = state[0] + dx, state[1] + dy
+            if (0 <= next_state[0] < width and 0 <= next_state[1] < height
+                    and next_state not in walls):
+                yield action, next_state
+
+    def bfs_search(self, start_pos, goal_pos, walls, grid_size):
+        walls = set(map(tuple, walls))
+        start_pos, goal_pos = tuple(start_pos), tuple(goal_pos)
+        frontier = deque([(start_pos, [])])
+        reached = {start_pos}
+
+        while frontier:
+            state, path = frontier.popleft()
+            if state == goal_pos:
+                return path
+            for action, next_state in self._successors(state, walls, grid_size):
+                if next_state not in reached:
+                    reached.add(next_state)
+                    frontier.append((next_state, path + [action]))
+        return None
+
+    def dfs_search(self, start_pos, goal_pos, walls, grid_size):
+        walls = set(map(tuple, walls))
+        start_pos, goal_pos = tuple(start_pos), tuple(goal_pos)
+        frontier = [(start_pos, [])]
+        reached = {start_pos}
+
+        while frontier:
+            state, path = frontier.pop()
+            if state == goal_pos:
+                return path
+            for action, next_state in self._successors(state, walls, grid_size):
+                if next_state not in reached:
+                    reached.add(next_state)
+                    frontier.append((next_state, path + [action]))
+        return None
+
+    def ucs_search(self, start_pos, goal_pos, walls, grid_size):
+        walls = set(map(tuple, walls))
+        start_pos, goal_pos = tuple(start_pos), tuple(goal_pos)
+        frontier = [(0, start_pos, [])]
+        reached = set()
+
+        while frontier:
+            path_cost, state, path = heapq.heappop(frontier)
+            if state in reached:
+                continue
+            reached.add(state)
+            if state == goal_pos:
+                return path
+            for action, next_state in self._successors(state, walls, grid_size):
+                if next_state not in reached:
+                    heapq.heappush(frontier, (path_cost + 1, next_state, path + [action]))
+        return None
+
+    def sense_and_act(self, percept: dict) -> str:
+        if not percept.get('last_move_succeeded', True):
+            self.plan.clear()
+
+        if not self.plan:
+            all_food = [tuple(position) for position in percept['all_food']]
+            if not all_food:
+                return 'Stay'
+
+            start = tuple(percept['agent_pos'])
+            closest_food = min(
+                all_food,
+                key=lambda food: abs(food[0] - start[0]) + abs(food[1] - start[1])
+            )
+            search_methods = {
+                'BFS': self.bfs_search,
+                'DFS': self.dfs_search,
+                'UCS': self.ucs_search,
+            }
+            self.plan = search_methods[self.active_algo](
+                start,
+                closest_food,
+                list(percept['walls']) + list(percept.get('all_toxic_traps', [])),
+                percept['grid_size']
+            ) or []
+
+        return self.plan.pop(0) if self.plan else 'Stay'
