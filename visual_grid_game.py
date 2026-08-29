@@ -16,7 +16,8 @@ AGENT_TYPES = {
     "Model-Based Agent": (ModelBasedAgent, None),
     "Search Agent (BFS)": (SearchAgent, 'BFS'),
     "Search Agent (DFS)": (SearchAgent, 'DFS'),
-    "Search Agent (UCS)": (SearchAgent, 'UCS')
+    "Search Agent (UCS)": (SearchAgent, 'UCS'),
+    "Search Agent (AStar)": (SearchAgent, 'AStar')
 }
 
 
@@ -311,7 +312,8 @@ class GridGameGUI:
             'max_steps': 150
         }
         self.env = VisualGridHuntGame(**self.game_settings)
-        self.agent = ModelBasedAgent()
+        self.agent = SearchAgent()
+        self.agent.active_algo = 'AStar'
         self.edit_mode = False
         self.simulation_running = False
         self.scheduled_step = None
@@ -338,7 +340,7 @@ class GridGameGUI:
         self.agent_frame = tk.Frame(root)
         self.agent_frame.pack()
         tk.Label(self.agent_frame, text="Agent:", font=("Arial", 11)).pack(side="left", padx=(0, 4))
-        self.agent_choice = tk.StringVar(value="Model-Based Agent")
+        self.agent_choice = tk.StringVar(value="Search Agent (AStar)")
         self.agent_menu = tk.OptionMenu(self.agent_frame, self.agent_choice, *AGENT_TYPES)
         self.agent_menu.config(font=("Arial", 11), width=18)
         self.agent_menu.pack(side="left")

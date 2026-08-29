@@ -192,7 +192,7 @@ class ModelBasedAgent:
 
 
 class SearchAgent:
-    """Plan paths to the closest food using BFS, DFS, or UCS."""
+    """Plan paths to the closest food using BFS, DFS, UCS, or A*."""
 
     ACTIONS = (
         ('Up', (0, 1)),
@@ -204,6 +204,12 @@ class SearchAgent:
     def __init__(self):
         self.plan = []
         self.active_algo = 'BFS'
+
+    def manhattan_distance(self, pos, goal):
+        return abs(pos[0] - goal[0]) + abs(pos[1] - goal[1])
+
+    def euclidean_distance(self, pos, goal):
+        return ((pos[0] - goal[0]) ** 2 + (pos[1] - goal[1]) ** 2) ** 0.5
 
     def _successors(self, state, walls, grid_size):
         width, height = grid_size
@@ -263,6 +269,36 @@ class SearchAgent:
                     heapq.heappush(frontier, (path_cost + 1, next_state, path + [action]))
         return None
 
+    def astar_search(self, start_pos, goal_pos, walls, grid_size, heuristic_type='manhattan'):
+        walls = set(map(tuple, walls))
+        start_pos, goal_pos = tuple(start_pos), tuple(goal_pos)
+        if heuristic_type != 'manhattan':
+            raise ValueError("Only the Manhattan heuristic is currently supported")
+
+        start_h_cost = self.manhattan_distance(start_pos, goal_pos)
+        frontier = []
+        heapq.heappush(frontier, (start_h_cost, 0, start_pos, []))
+        reached_states = set()
+
+        while frontier:
+            f_cost, g_cost, current_pos, path_taken = heapq.heappop(frontier)
+            if current_pos in reached_states:
+                continue
+            if current_pos == goal_pos:
+                return path_taken
+            reached_states.add(current_pos)
+
+            for action, next_state in self._successors(current_pos, walls, grid_size):
+                if next_state not in reached_states:
+                    new_g_cost = g_cost + 1
+                    new_h_cost = self.manhattan_distance(next_state, goal_pos)
+                    new_f_cost = new_g_cost + new_h_cost
+                    heapq.heappush(
+                        frontier,
+                        (new_f_cost, new_g_cost, next_state, path_taken + [action])
+                    )
+        return None
+
     def sense_and_act(self, percept: dict) -> str:
         if not percept.get('last_move_succeeded', True):
             self.plan.clear()
@@ -277,16 +313,18 @@ class SearchAgent:
                 all_food,
                 key=lambda food: abs(food[0] - start[0]) + abs(food[1] - start[1])
             )
-            search_methods = {
-                'BFS': self.bfs_search,
-                'DFS': self.dfs_search,
-                'UCS': self.ucs_search,
-            }
-            self.plan = search_methods[self.active_algo](
-                start,
-                closest_food,
-                list(percept['walls']) + list(percept.get('all_toxic_traps', [])),
-                percept['grid_size']
-            ) or []
+            obstacles = list(percept['walls']) + list(percept.get('all_toxic_traps', []))
+            grid_size = percept['grid_size']
+
+            if self.active_algo == 'BFS':
+                self.plan = self.bfs_search(start, closest_food, obstacles, grid_size) or []
+            elif self.active_algo == 'DFS':
+                self.plan = self.dfs_search(start, closest_food, obstacles, grid_size) or []
+            elif self.active_algo == 'UCS':
+                self.plan = self.ucs_search(start, closest_food, obstacles, grid_size) or []
+            elif self.active_algo == 'AStar':
+                self.plan = self.astar_search(start, closest_food, obstacles, grid_size) or []
+            else:
+                raise ValueError(f"Unknown search algorithm: {self.active_algo}")
 
         return self.plan.pop(0) if self.plan else 'Stay'
