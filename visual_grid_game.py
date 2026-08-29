@@ -3,13 +3,15 @@ import json
 import random
 import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox
+from tkinter import filedialog, messagebox
 
 from agent import GreedyGridAgent, ModelBasedAgent, SearchAgent, SimpleReflexAgent
 
 
 LEVEL_FILE = Path(__file__).with_name("level_positions.json")
 DEFAULT_FOOD_CONCENTRATION = 15
+MIN_GRID_SIZE = 7
+MAX_GRID_SIZE = 25
 AGENT_TYPES = {
     "Greedy Grid Agent": (GreedyGridAgent, None),
     "Simple Reflex Agent": (SimpleReflexAgent, None),
@@ -59,8 +61,97 @@ def load_food_configuration(level_file=LEVEL_FILE):
         return set(), 1
 
 
+def load_grid_size(level_file=LEVEL_FILE):
+    """Load a saved square grid size, falling back to 15x15."""
+    try:
+        with open(level_file, "r", encoding="utf-8") as file:
+            grid_size = json.load(file).get("grid_size", [15, 15])
+        if (isinstance(grid_size, list) and len(grid_size) == 2
+                and all(type(value) is int for value in grid_size)
+                and grid_size[0] == grid_size[1]
+                and MIN_GRID_SIZE <= grid_size[0] <= MAX_GRID_SIZE):
+            return tuple(grid_size)
+    except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, AttributeError):
+        pass
+    return 15, 15
+
+
+def validate_level_configuration(level):
+    """Validate and normalize an imported level configuration."""
+    required_fields = {
+        "grid_size", "walls", "toxic_traps", "food_positions",
+        "player_start", "random_food"
+    }
+    if not isinstance(level, dict):
+        raise ValueError("The JSON root must be an object.")
+    missing = required_fields - set(level)
+    unknown = set(level) - required_fields
+    if missing:
+        raise ValueError(f"Missing fields: {', '.join(sorted(missing))}")
+    if unknown:
+        raise ValueError(f"Unknown fields: {', '.join(sorted(unknown))}")
+
+    grid_size = level["grid_size"]
+    if (not isinstance(grid_size, list) or len(grid_size) != 2
+            or any(type(value) is not int for value in grid_size)):
+        raise ValueError("grid_size must be [width, height] using integers.")
+    width, height = grid_size
+    if width != height or not MIN_GRID_SIZE <= width <= MAX_GRID_SIZE:
+        raise ValueError(f"grid_size must be square and between {MIN_GRID_SIZE} and {MAX_GRID_SIZE}.")
+
+    def validate_positions(field):
+        positions = level[field]
+        if not isinstance(positions, list):
+            raise ValueError(f"{field} must be a list of [x, y] coordinates.")
+        normalized = []
+        for position in positions:
+            if (not isinstance(position, list) or len(position) != 2
+                    or any(type(value) is not int for value in position)):
+                raise ValueError(f"Each {field} entry must be an integer [x, y] coordinate.")
+            coordinate = tuple(position)
+            if not (0 <= coordinate[0] < MAX_GRID_SIZE and 0 <= coordinate[1] < MAX_GRID_SIZE):
+                raise ValueError(
+                    f"{field} contains a coordinate outside the maximum 25x25 level: {position}"
+                )
+            normalized.append(coordinate)
+        if len(normalized) != len(set(normalized)):
+            raise ValueError(f"{field} contains duplicate coordinates.")
+        return set(normalized)
+
+    walls = validate_positions("walls")
+    traps = validate_positions("toxic_traps")
+    food = validate_positions("food_positions")
+    if walls & traps or walls & food or traps & food:
+        raise ValueError("Walls, toxic traps, and food positions must not overlap.")
+
+    start = level["player_start"]
+    if (not isinstance(start, list) or len(start) != 2
+            or any(type(value) is not int for value in start)):
+        raise ValueError("player_start must be an integer [x, y] coordinate.")
+    start = tuple(start)
+    if not (0 <= start[0] < width and 0 <= start[1] < height):
+        raise ValueError("player_start must be inside the grid.")
+    if start in walls | traps | food:
+        raise ValueError("player_start must be on an empty tile.")
+
+    random_food = level["random_food"]
+    if type(random_food) is not int or random_food not in (0, 1):
+        raise ValueError("random_food must be either 0 or 1.")
+    if random_food == 1 and food:
+        raise ValueError("food_positions must be empty when random_food is 1.")
+
+    return {
+        "grid_size": (width, height),
+        "walls": walls,
+        "toxic_traps": traps,
+        "food_positions": food,
+        "player_start": start,
+        "random_food": random_food
+    }
+
+
 def save_level_positions(walls, toxic_traps, player_start=None, food_positions=None,
-                         random_food=None, level_file=LEVEL_FILE):
+                         random_food=None, level_file=LEVEL_FILE, grid_size=None):
     """Persist terrain coordinates in a readable, stable order."""
     if player_start is None:
         player_start = load_start_position(level_file)
@@ -69,6 +160,8 @@ def save_level_positions(walls, toxic_traps, player_start=None, food_positions=N
         food_positions = saved_food
     if random_food is None:
         random_food = saved_random_food
+    if grid_size is None:
+        grid_size = load_grid_size(level_file)
 
     def coordinate_list_lines(name, positions, trailing_comma=True):
         sorted_positions = sorted(positions)
@@ -82,6 +175,7 @@ def save_level_positions(walls, toxic_traps, player_start=None, food_positions=N
         return lines
 
     lines = ["{"]
+    lines.append(f'    "grid_size": {json.dumps(list(grid_size))},')
     lines.extend(coordinate_list_lines("walls", walls))
     lines.extend(coordinate_list_lines("toxic_traps", toxic_traps))
     lines.extend(coordinate_list_lines("food_positions", food_positions))
@@ -272,7 +366,8 @@ class GridGameGUI:
             saved_walls = set(walls)
 
         def is_valid_coordinate(position):
-            return len(position) == 2 and position[0] >= 0 and position[1] >= 0
+            return (len(position) == 2 and 0 <= position[0] < MAX_GRID_SIZE
+                    and 0 <= position[1] < MAX_GRID_SIZE)
 
         if not is_valid_coordinate(saved_start) or not (saved_start[0] < width and saved_start[1] < height):
             saved_start = (0, 0)
@@ -377,8 +472,8 @@ class GridGameGUI:
         self.grid_size_frame = tk.Frame(root)
         self.grid_size_scale = tk.Scale(
             self.grid_size_frame,
-            from_=7,
-            to=15,
+            from_=MIN_GRID_SIZE,
+            to=MAX_GRID_SIZE,
             orient="horizontal",
             resolution=1,
             label="Grid size",
@@ -401,6 +496,13 @@ class GridGameGUI:
 
         self.clear_btn = tk.Button(self.button_frame, text="Clear Grid", command=self.clear_grid,
                                    font=("Arial", 12), bg="#b91c1c", fg="white")
+
+        self.export_btn = tk.Button(self.button_frame, text="Export JSON", command=self.export_level,
+                                    font=("Arial", 11), bg="#0369a1", fg="white")
+        self.export_btn.pack(side="left", padx=4)
+        self.import_btn = tk.Button(self.button_frame, text="Import JSON", command=self.import_level,
+                                    font=("Arial", 11), bg="#0369a1", fg="white")
+        self.import_btn.pack(side="left", padx=4)
 
         self.draw_grid()
 
@@ -478,6 +580,104 @@ class GridGameGUI:
         self.label.config(text=f"Edit mode: {size}×{size} grid")
         self.draw_grid()
 
+    def export_level(self):
+        if self.edit_mode or self.simulation_running:
+            return
+        level_file = filedialog.asksaveasfilename(
+            title="Export Level Configuration",
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json")]
+        )
+        if not level_file:
+            return
+        if Path(level_file).suffix.lower() != ".json":
+            messagebox.showerror("Export Failed", "Level configurations must use the .json extension.")
+            return
+
+        visible_walls, visible_traps, visible_food = self._visible_terrain()
+        exported_food = visible_food if not self.random_food else set()
+        try:
+            save_level_positions(
+                visible_walls,
+                visible_traps,
+                self.game_settings['start_position'],
+                exported_food,
+                self.random_food,
+                Path(level_file),
+                (self.game_settings['width'], self.game_settings['height'])
+            )
+            messagebox.showinfo("Export Complete", "Level configuration exported successfully.")
+        except OSError as error:
+            messagebox.showerror("Export Failed", str(error))
+
+    def import_level(self):
+        if self.edit_mode or self.simulation_running:
+            return
+        level_file = filedialog.askopenfilename(
+            title="Import Level Configuration",
+            filetypes=[("JSON files", "*.json")]
+        )
+        if not level_file:
+            return
+        if Path(level_file).suffix.lower() != ".json":
+            messagebox.showerror("Invalid Level Configuration", "Only .json files can be imported.")
+            return
+
+        try:
+            with open(level_file, "r", encoding="utf-8") as file:
+                imported = validate_level_configuration(json.load(file))
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            messagebox.showerror("Invalid Level Configuration", str(error))
+            return
+
+        width, height = imported['grid_size']
+        self.level_walls = set(imported['walls'])
+        self.level_toxic_traps = set(imported['toxic_traps'])
+        self.level_food = set(imported['food_positions'])
+        self.random_food = imported['random_food']
+        visible_walls = {
+            position for position in self.level_walls
+            if position[0] < width and position[1] < height
+        }
+        visible_traps = {
+            position for position in self.level_toxic_traps
+            if position[0] < width and position[1] < height
+        }
+        visible_food = {
+            position for position in self.level_food
+            if position[0] < width and position[1] < height
+        }
+        self.game_settings.update({
+            'width': width,
+            'height': height,
+            'custom_walls': visible_walls,
+            'custom_toxic_traps': visible_traps,
+            'custom_food': visible_food,
+            'random_food': self.random_food,
+            'start_position': imported['player_start']
+        })
+        self.game_settings['num_food'] = self.food_count_for_concentration()
+        self.env = VisualGridHuntGame(**self.game_settings)
+        self.cell_size = self.canvas_size / max(width, height)
+        self.grid_size_scale.set(width)
+        self.restart_required = False
+        self.btn.config(text="Start Simulation", state="normal", bg="#000066")
+        try:
+            save_level_positions(
+                self.level_walls,
+                self.level_toxic_traps,
+                imported['player_start'],
+                self.level_food,
+                self.random_food,
+                LEVEL_FILE,
+                imported['grid_size']
+            )
+        except OSError as error:
+            messagebox.showerror("Import Failed", f"Could not save the imported level: {error}")
+            return
+        self.label.config(text=f"Imported {width}×{height} level | Score: 0 | Steps: 0")
+        self.draw_grid()
+
     def regenerate_food(self, set_random=True):
         if self.edit_mode or self.simulation_running:
             return
@@ -493,7 +693,8 @@ class GridGameGUI:
             self.level_toxic_traps,
             self.game_settings['start_position'],
             set(),
-            1
+            1,
+            grid_size=(self.game_settings['width'], self.game_settings['height'])
         )
         self.restart_required = False
         self.btn.config(text="Start Simulation", state="normal", bg="#000066")
@@ -520,6 +721,8 @@ class GridGameGUI:
             self.agent_menu.config(state="disabled")
             self.retry_food_btn.config(state="disabled")
             self.steps_scale.config(state="disabled")
+            self.export_btn.config(state="disabled")
+            self.import_btn.config(state="disabled")
             self.edit_btn.config(text="Save Changes", bg="#15803d")
             self.clear_btn.pack(side="left", padx=4)
             self.label.config(text="Edit mode: cycle Empty → Wall → Toxic Trap → Food")
@@ -529,12 +732,6 @@ class GridGameGUI:
         if self.edit_phase == 'terrain':
             self._sync_visible_terrain()
             self.random_food = 0 if self.env.food_positions else 1
-            save_level_positions(
-                self.level_walls,
-                self.level_toxic_traps,
-                food_positions=self.level_food,
-                random_food=self.random_food
-            )
             visible_walls, visible_traps, visible_food = self._visible_terrain()
             self.game_settings['custom_walls'] = visible_walls
             self.game_settings['custom_toxic_traps'] = visible_traps
@@ -569,7 +766,8 @@ class GridGameGUI:
             self.level_toxic_traps,
             start_position,
             self.level_food,
-            self.random_food
+            self.random_food,
+            grid_size=(self.game_settings['width'], self.game_settings['height'])
         )
         self.game_settings['start_position'] = start_position
         self.game_settings['random_food'] = self.random_food
@@ -587,6 +785,8 @@ class GridGameGUI:
         self.agent_menu.config(state="normal")
         self.retry_food_btn.config(state="normal")
         self.steps_scale.config(state="normal")
+        self.export_btn.config(state="normal")
+        self.import_btn.config(state="normal")
         self.grid_size_frame.pack_forget()
         self.food_frame.pack(pady=4, before=self.button_frame)
         self.edit_btn.config(text="Edit Grid", bg="#475569")
@@ -745,6 +945,8 @@ class GridGameGUI:
         self.agent_menu.config(state="disabled")
         self.retry_food_btn.config(state="disabled")
         self.steps_scale.config(state="disabled")
+        self.export_btn.config(state="disabled")
+        self.import_btn.config(state="disabled")
         self.edit_btn.config(state="disabled")
 
         def step():
@@ -768,6 +970,8 @@ class GridGameGUI:
                 self.agent_menu.config(state="normal")
                 self.retry_food_btn.config(state="normal")
                 self.steps_scale.config(state="normal")
+                self.export_btn.config(state="normal")
+                self.import_btn.config(state="normal")
                 self.edit_btn.config(state="normal")
 
         step()
@@ -787,6 +991,8 @@ class GridGameGUI:
         self.agent_menu.config(state="normal")
         self.retry_food_btn.config(state="normal")
         self.steps_scale.config(state="normal")
+        self.export_btn.config(state="normal")
+        self.import_btn.config(state="normal")
         self.edit_btn.config(state="normal")
 
     def stop_simulation(self):
@@ -799,11 +1005,14 @@ class GridGameGUI:
         self.agent_menu.config(state="normal")
         self.retry_food_btn.config(state="normal")
         self.steps_scale.config(state="normal")
+        self.export_btn.config(state="normal")
+        self.import_btn.config(state="normal")
         self.edit_btn.config(state="normal")
         self.label.config(text=f"Simulation stopped | Final Score: {self.env.score} | Steps: {self.env.steps}")
 
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = GridGameGUI(root, width=15, height=15, num_food=15, num_opponents=0)
+    saved_width, saved_height = load_grid_size()
+    app = GridGameGUI(root, width=saved_width, height=saved_height, num_food=15, num_opponents=0)
     root.mainloop()
